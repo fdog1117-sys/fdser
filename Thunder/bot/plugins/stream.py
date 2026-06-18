@@ -3,6 +3,7 @@ import json
 import asyncio
 import secrets
 from typing import Any, Dict, Optional
+from urllib.parse import quote
 
 from pyrogram import Client, enums, filters
 from pyrogram.errors import FloodWait, MessageNotModified, MessageDeleteForbidden, MessageIdInvalid
@@ -42,7 +43,7 @@ HF_TOKEN = os.environ.get("HF_TOKEN")
 DATASET_REPO = os.environ.get("DATASET_REPO")
 METADATA_FILE = os.environ.get("METADATA_FILE", "metadata_db.json")
 
-# 读取基础 Telegram 配置，兜底保障多端同步安全性
+# 读取基础 Telegram 配置，保证多端异步的安全性
 BIN_CHANNEL = int(os.environ.get("BIN_CHANNEL", Var.BIN_CHANNEL))
 MAX_BATCH_FILES = int(os.environ.get("MAX_BATCH_FILES", Var.MAX_BATCH_FILES))
 CHANNEL_ENABLED = os.environ.get("CHANNEL", str(Var.CHANNEL)).lower() in ("true", "1", "yes")
@@ -281,18 +282,22 @@ async def process_single(bot: Client, msg: Message, file_msg: Message, status_ms
             raise Exception("文件本地下载到容器盘失败。")
 
         if not HF_TOKEN or not DATASET_REPO:
-            raise Exception("未检测到系统环境变量中的 HF_TOKEN 或 DATASET_REPO 配置，请在 Space Secrets 中检查！")
+            raise Exception("未检测到环境变量中的 HF_TOKEN 或 DATASET_REPO 配置！")
 
-        hf_api = HfApi(token=HF_TOKEN)
-        storage_path = f"files/{file_msg.id}_{file_name}"
+        # 💡 使用 quote 对包含空格和特殊字符（如 &）的文件名进行严格 URL 安全转义编码
+        safe_file_name = quote(file_name)
+        storage_path = f"files/{file_msg.id}_{safe_file_name}"
         
+        hf_api = HfApi(token=HF_TOKEN)
         await asyncio.to_thread(hf_api.upload_file, path_or_fileobj=local_path, path_in_repo=storage_path, repo_id=DATASET_REPO, repo_type="dataset")
 
         if os.path.exists(local_path):
             os.remove(local_path)
 
+        # 💡 对仓库名进行小写规范化，完美避开 Telegram 内联按钮 400 BUTTON_URL_INVALID 强校验
         safe_repo = str(DATASET_REPO).lower()
-	cdn_url = f"https://huggingface.co/datasets/{safe_repo}/resolve/main/{storage_path}"
+        cdn_url = f"https://huggingface.co/datasets/{safe_repo}/resolve/main/{storage_path}"
+        
         meta_data = {"file_name": file_name, "file_size": file_size, "mime_type": getattr(media, "mime_type", "application/octet-stream"), "tg_message_id": file_msg.id, "cdn_url": cdn_url}
         save_meta(file_msg.id, meta_data)
 
