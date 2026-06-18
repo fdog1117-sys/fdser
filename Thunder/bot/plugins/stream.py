@@ -261,7 +261,7 @@ async def channel_receive_handler(bot: Client, msg: Message):
 
     await handle_rate_limited_request(bot, msg, _actual_channel_receive_handler, rl_user_id=rl_user_id)
 
-# 👑 【核心截断与重构防御区】
+# 👑 【核心截断与终极重构防御区】
 async def process_single(bot: Client, msg: Message, file_msg: Message, status_msg: Optional[Message], shortener_val: bool, original_request_msg: Optional[Message] = None, notification_msg: Optional[Message] = None):
     try:
         if not status_msg:
@@ -285,37 +285,35 @@ async def process_single(bot: Client, msg: Message, file_msg: Message, status_ms
         if not HF_TOKEN or not DATASET_REPO:
             raise Exception("未检测到环境变量中的 HF_TOKEN 或 DATASET_REPO 配置！")
 
-        # 🚀 针对 Telegram 按钮 256 字节超长限制的清洗策略
-        # 1. 过滤掉特殊干扰字符，仅保留常规英文字符、中文、数字、点和减号
+        # -------------------------------------------------------------
+        # 🚨 【动态长度防御算法】
+        # -------------------------------------------------------------
+        # 1. 过滤掉特殊字符，仅保留常规字符、中文、数字、点和减号
         clean_name = re.sub(r'[^\w\s\.\-\u4e00-\u9fa5]', '', file_name).strip()
-        # 2. 将连续空格压缩为单个下划线，规避 %20 产生的三倍膨胀率
+        # 2. 将连续空格压缩为单个下划线，规避 %20 产生的三倍体积膨胀率
         clean_name = re.sub(r'\s+', '_', clean_name)
-        
-        # 3. 切分文件名与后缀，控制基础文件名长度不超过 35 个字符
         base, ext = os.path.splitext(clean_name)
-        if len(base) > 35:
-            base = base[:35]
-        clean_name = f"{base}{ext}"
-
-        # 4. 安全编码生成托管路径
-        safe_file_name = quote(clean_name)
-        storage_path = f"files/{file_msg.id}_{safe_file_name}"
+        safe_repo = str(DATASET_REPO).lower()
         
+        # 3. 尝试使用截断的文件名生成标准路径
+        short_base = base[:20]  # 激进截断主文件名到 20 字符
+        test_file_name = quote(f"{short_base}{ext}")
+        storage_path = f"files/{file_msg.id}_{test_file_name}"
+        cdn_url = f"https://huggingface.co/datasets/{safe_repo}/resolve/main/{storage_path}"
+        
+        # 4. 终极保底熔断：若整体长度逼近 240 字节限制，立刻抛弃原文件名，改用绝对安全的纯数字 ID 路径
+        if len(cdn_url) > 240:
+            logger.warning(f"检测到 URL 长度超标 ({len(cdn_url)}B)，激活纯数字保底策略。")
+            storage_path = f"files/{file_msg.id}{ext}"
+            cdn_url = f"https://huggingface.co/datasets/{safe_repo}/resolve/main/{storage_path}"
+        # -------------------------------------------------------------
+
+        # 上传到 Hugging Face
         hf_api = HfApi(token=HF_TOKEN)
         await asyncio.to_thread(hf_api.upload_file, path_or_fileobj=local_path, path_in_repo=storage_path, repo_id=DATASET_REPO, repo_type="dataset")
 
         if os.path.exists(local_path):
             os.remove(local_path)
-
-        # 小写化仓库名，生成符合 Telegram 验证标准的规范直链
-        safe_repo = str(DATASET_REPO).lower()
-        cdn_url = f"https://huggingface.co/datasets/{safe_repo}/resolve/main/{storage_path}"
-        
-        # 保底校验：若长度仍越界（例如 DATASET_REPO 极其冗长），进行终极防御截断
-        if len(cdn_url) > 255:
-            logger.warning(f"URL 仍有超长风险 ({len(cdn_url)} 字节)，切换为无特殊文件名保底路径。")
-            storage_path = f"files/{file_msg.id}{ext}"
-            cdn_url = f"https://huggingface.co/datasets/{safe_repo}/resolve/main/{storage_path}"
         
         meta_data = {"file_name": file_name, "file_size": file_size, "mime_type": getattr(media, "mime_type", "application/octet-stream"), "tg_message_id": file_msg.id, "cdn_url": cdn_url}
         save_meta(file_msg.id, meta_data)
