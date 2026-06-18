@@ -291,7 +291,8 @@ async def process_single(bot: Client, msg: Message, file_msg: Message, status_ms
         if os.path.exists(local_path):
             os.remove(local_path)
 
-        cdn_url = f"https://huggingface.co/datasets/{DATASET_REPO}/resolve/main/{storage_path}"
+        safe_repo = str(DATASET_REPO).lower()
+	cdn_url = f"https://huggingface.co/datasets/{safe_repo}/resolve/main/{storage_path}"
         meta_data = {"file_name": file_name, "file_size": file_size, "mime_type": getattr(media, "mime_type", "application/octet-stream"), "tg_message_id": file_msg.id, "cdn_url": cdn_url}
         save_meta(file_msg.id, meta_data)
 
