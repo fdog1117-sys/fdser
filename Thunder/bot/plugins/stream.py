@@ -2,6 +2,7 @@ import os
 import json
 import asyncio
 import secrets
+import re  # 引入正则库用于清洗文件名
 from typing import Any, Dict, Optional
 from urllib.parse import quote
 
@@ -260,7 +261,7 @@ async def channel_receive_handler(bot: Client, msg: Message):
 
     await handle_rate_limited_request(bot, msg, _actual_channel_receive_handler, rl_user_id=rl_user_id)
 
-# 👑 【微创手术拦截核心】
+# 👑 【核心截断与重构防御区】
 async def process_single(bot: Client, msg: Message, file_msg: Message, status_msg: Optional[Message], shortener_val: bool, original_request_msg: Optional[Message] = None, notification_msg: Optional[Message] = None):
     try:
         if not status_msg:
@@ -284,8 +285,20 @@ async def process_single(bot: Client, msg: Message, file_msg: Message, status_ms
         if not HF_TOKEN or not DATASET_REPO:
             raise Exception("未检测到环境变量中的 HF_TOKEN 或 DATASET_REPO 配置！")
 
-        # 💡 使用 quote 对包含空格和特殊字符（如 &）的文件名进行严格 URL 安全转义编码
-        safe_file_name = quote(file_name)
+        # 🚀 针对 Telegram 按钮 256 字节超长限制的清洗策略
+        # 1. 过滤掉特殊干扰字符，仅保留常规英文字符、中文、数字、点和减号
+        clean_name = re.sub(r'[^\w\s\.\-\u4e00-\u9fa5]', '', file_name).strip()
+        # 2. 将连续空格压缩为单个下划线，规避 %20 产生的三倍膨胀率
+        clean_name = re.sub(r'\s+', '_', clean_name)
+        
+        # 3. 切分文件名与后缀，控制基础文件名长度不超过 35 个字符
+        base, ext = os.path.splitext(clean_name)
+        if len(base) > 35:
+            base = base[:35]
+        clean_name = f"{base}{ext}"
+
+        # 4. 安全编码生成托管路径
+        safe_file_name = quote(clean_name)
         storage_path = f"files/{file_msg.id}_{safe_file_name}"
         
         hf_api = HfApi(token=HF_TOKEN)
@@ -294,9 +307,15 @@ async def process_single(bot: Client, msg: Message, file_msg: Message, status_ms
         if os.path.exists(local_path):
             os.remove(local_path)
 
-        # 💡 对仓库名进行小写规范化，完美避开 Telegram 内联按钮 400 BUTTON_URL_INVALID 强校验
+        # 小写化仓库名，生成符合 Telegram 验证标准的规范直链
         safe_repo = str(DATASET_REPO).lower()
         cdn_url = f"https://huggingface.co/datasets/{safe_repo}/resolve/main/{storage_path}"
+        
+        # 保底校验：若长度仍越界（例如 DATASET_REPO 极其冗长），进行终极防御截断
+        if len(cdn_url) > 255:
+            logger.warning(f"URL 仍有超长风险 ({len(cdn_url)} 字节)，切换为无特殊文件名保底路径。")
+            storage_path = f"files/{file_msg.id}{ext}"
+            cdn_url = f"https://huggingface.co/datasets/{safe_repo}/resolve/main/{storage_path}"
         
         meta_data = {"file_name": file_name, "file_size": file_size, "mime_type": getattr(media, "mime_type", "application/octet-stream"), "tg_message_id": file_msg.id, "cdn_url": cdn_url}
         save_meta(file_msg.id, meta_data)
